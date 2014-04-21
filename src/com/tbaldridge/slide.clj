@@ -4,23 +4,32 @@
   (:import [javax.swing JFrame]
            [javafx.collections FXCollections]
            [javafx.event ActionEvent EventHandler]
-           [javafx.scene Scene SceneBuilder]
-           [javafx.scene.control Button ListView]
-           [javafx.scene.layout StackPane BorderPane]
+           [javafx.scene Scene SceneBuilder GroupBuilder]
+           [javafx.scene.shape CircleBuilder]
+           [javafx.scene.control Button ListView Label ScrollPaneBuilder]
+           [javafx.scene.layout StackPaneBuilder BorderPane]
            [javafx.stage Stage StageBuilder]
            [javafx.application Application]
            [javafx.beans.value ChangeListener ObservableValue]
-           (javafx.scene.control ButtonBuilder TextFieldBuilder ListViewBuilder)
+           (javafx.scene.control ButtonBuilder TextFieldBuilder ListViewBuilder TableViewBuilder TableColumnBuilder
+                                 LabelBuilder)
            (javafx.scene.layout VBoxBuilder BorderPaneBuilder)
            [java.lang.ref WeakReference]))
 
 (def ^:dynamic *builder-mappings*
   {:stage StageBuilder
    :scene SceneBuilder
+   :group GroupBuilder
+   :stack-pane StackPaneBuilder
+   :circle CircleBuilder
+   :scroll-pane ScrollPaneBuilder
    :button ButtonBuilder
+   :label LabelBuilder
    :vbox VBoxBuilder
    :border-pane BorderPaneBuilder
    :list-view ListViewBuilder
+   :table-view TableViewBuilder
+   :table-column TableColumnBuilder
    :text-field TextFieldBuilder})
 
 (defonce force-toolkit-init
@@ -44,7 +53,7 @@
 (defn to-javafx-value [v]
   (cond
    (or (vector? v)
-       (seq? v)) (FXCollections/observableArrayList v)
+       (seq? v)) (FXCollections/observableArrayList (map to-javafx-value  v))
 
        :else v))
 
@@ -82,19 +91,29 @@
                       (put! v (or new-val :nil)))))))
 
 (defn create-input-binding [crtl k c]
-  (let [sk (name k)
-        nm (subs sk 0 (- (count sk) 2))
-        ctrl-prop (eval-call `(fn [ctrl#] (. ctrl# ~(symbol (str nm "Property")))) crtl)
-        converter (data-converter (class ctrl-prop))]
-        (go
-          (try
-            (loop []
-              (when-let [v (<! c)]
-                (println v)
-                (util/run-later (.setValue ctrl-prop (converter v)))
-                (recur)))
-            (catch Throwable ex
-              (println ex))))))
+  (if (= (name k) "children<-")
+    (go
+      (try
+        (loop []
+          (when-let [v (<! c)]
+            (println v)
+            (util/run-later (-> crtl .getChildren (.setAll v)))
+            (recur)))
+        (catch Throwable ex
+          (println ex))))
+    (let [sk (name k)
+          nm (subs sk 0 (- (count sk) 2))
+          ctrl-prop (eval-call `(fn [ctrl#] (. ctrl# ~(symbol (str nm "Property")))) crtl)
+          converter (data-converter (class ctrl-prop))]
+      (go
+        (try
+          (loop []
+            (when-let [v (<! c)]
+              (println v)
+              (util/run-later (.setValue ctrl-prop (converter v)))
+              (recur)))
+          (catch Throwable ex
+            (println ex)))))))
 
 (defmulti build-item :type)
 
@@ -171,45 +190,49 @@
               (recur)))))
     c))
 
-(def a (atom {:foo "1"
-              :disable false}))
+(comment
+  (def a (atom {:foo "1"
+                :disable false}))
 
-(def scene {:type :stage
-            :title "hello"
-            :scene {:type :scene
-                    :height 480
-                    :width 640
-                    :root {:type :vbox
-                           :minHeight 400
-                           :minWidth 400
-                           :children [{:type :button
-                                       :text<- (bind-to-get-in a [:foo])
-                                       :pressed-> (publish-to :button-clicked2)}
-                                      {:type :text-field
-                                       :name :input
-                                       :text-> (bind-to-assoc-in a [:foo])
-                                       :text "FooBar"}
-                                      {:type :border-pane
-                                       :top {:type :button
-                                             :text "Hey"}
-                                       :center {:type :list-view
-                                                :items<- (async/map<
-                                                          #(map (fn [x]
-                                                                  (build-item {:type :button
-                                                                               :text x})) %)
-                                                          (bind-to-get-in a [:items]))}
-                                       :left {:type :button
-                                              :text "cool"}
-                                       :right {:type :button
-                                               :text "right on"}}
-                                      #_{:type :text-field
-                                       :text (map-property
-                                              (partial str "foo - ")
-                                              (bind-to :input :text))}
-                                      #_{:type :list-view
-                                       :items (rand-list)}]}}})
+  (def scene {:type :stage
+              :title "hello"
+              :scene {:type :scene
+                      :height 480
+                      :width 640
+                      :root {:type :vbox
+                             :minHeight 400
+                             :minWidth 400
+                             :children [{:type :button
+                                         :text<- (bind-to-get-in a [:foo])
+                                         :pressed-> (publish-to :button-clicked2)}
+                                        {:type :label
+                                         :text "Sup homie?"}
+                                        {:type :text-field
+                                         :name :input
+                                         :text-> (bind-to-assoc-in a [:foo])
+                                         :text "FooBar"}
+                                        {:type :border-pane
+                                         :top {:type :button
+                                               :text "Hey"}
+                                         :center {:type :table-view
+                                                  :columns [{:type :table-column
+                                                             :text "name"}
+                                                            {:type :table-column
+                                                             :text "age"}]
+                                                  :items [["foo" "bar"]]}
+                                         :left {:type :button
+                                                :text "cool"}
+                                         :right {:type :button
+                                                 :text "right on"}}
+                                        #_{:type :text-field
+                                           :text (map-property
+                                                  (partial str "foo - ")
+                                                  (bind-to :input :text))}
+                                        #_{:type :list-view
+                                           :items (rand-list)}]}}})
 
-(util/run-and-wait (.show (build-item scene)))
+  (util/run-and-wait (.show (build-item scene)))
 
-(swap! a assoc :disable false)
-(println @a)
+  (swap! a assoc :items ["fo2" "bar"])
+  (println @a)
+  )
