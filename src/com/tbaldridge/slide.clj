@@ -14,7 +14,7 @@
            [javafx.beans.value ChangeListener ObservableValue]
            (javafx.scene.control ButtonBuilder TextFieldBuilder ListViewBuilder TableViewBuilder TableColumnBuilder
                                  LabelBuilder)
-           (javafx.scene.layout VBoxBuilder BorderPaneBuilder)
+           (javafx.scene.layout VBoxBuilder HBoxBuilder BorderPaneBuilder)
            [java.lang.ref WeakReference]))
 
 (def ^:dynamic *builder-mappings*
@@ -30,6 +30,7 @@
    :button ButtonBuilder
    :label LabelBuilder
    :vbox VBoxBuilder
+   :hbox HBoxBuilder
    :border-pane BorderPaneBuilder
    :list-view ListViewBuilder
    :table-view TableViewBuilder
@@ -77,7 +78,12 @@
 (defmethod data-converter javafx.scene.control.ListView$2
   [x]
   (fn [data]
-     (FXCollections/observableArrayList data)))
+    (FXCollections/observableArrayList data)))
+
+(defmethod data-converter :default
+  [x]
+  (fn [data]
+    data))
 
 (defn output-binding? [nm]
   (.endsWith (name nm) "->"))
@@ -104,7 +110,6 @@
       (try
         (loop []
           (when-let [v (<! c)]
-            (println v)
             (util/run-later (-> crtl .getChildren (.setAll v)))
             (recur)))
         (catch Throwable ex
@@ -117,7 +122,6 @@
         (try
           (loop []
             (when-let [v (<! c)]
-              (println v)
               (util/run-later (.setValue ctrl-prop (converter v)))
               (recur)))
           (catch Throwable ex
@@ -152,7 +156,6 @@
 (let [topics (atom {})]
 
   (defn publish [topic msg]
-    (println "publish to" topic msg)
     (let [subs (get @topics topic)]
       (doseq [sub subs]
         (when-let [c (.get sub)]
@@ -163,7 +166,6 @@
       (go
         (try
           (loop []
-            (println "r")
             (when-let [v (<! c)]
               (publish topic v)
               (recur))
@@ -184,18 +186,17 @@
 (defn bind-to-get-in [a path]
   (let [c (chan (dropping-buffer 1))]
     (add-watch a c (fn [k r o n]
-                     (println "got" o n)
                      (when-let [v (get-in @a path)]
                        (if-not (not (put! c v))
                          (remove-watch a c)))))
-    (put! c (get-in @a path))
+    (when-let [v (get-in @a path)]
+      (put! c v))
     (async/unique c)))
 
 (defn bind-to-assoc-in [a path]
   (let [c (chan (async/sliding-buffer 1))]
     (go (try (loop []
                (let [v (<! c)]
-                 (println "associng " v)
                  (when-not (nil? v)
                    (swap! a assoc-in path v)
                    (recur))))
