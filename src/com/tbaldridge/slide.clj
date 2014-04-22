@@ -5,7 +5,8 @@
            [javafx.collections FXCollections]
            [javafx.event ActionEvent EventHandler]
            [javafx.scene Scene SceneBuilder GroupBuilder]
-           [javafx.scene.shape CircleBuilder]
+           [javafx.scene.shape CircleBuilder RectangleBuilder]
+           [javafx.scene.text TextBuilder FontBuilder]
            [javafx.scene.control Button ListView Label ScrollPaneBuilder]
            [javafx.scene.layout StackPaneBuilder BorderPane]
            [javafx.stage Stage StageBuilder]
@@ -22,6 +23,9 @@
    :group GroupBuilder
    :stack-pane StackPaneBuilder
    :circle CircleBuilder
+   :text TextBuilder
+   :font FontBuilder
+   :rectangle RectangleBuilder
    :scroll-pane ScrollPaneBuilder
    :button ButtonBuilder
    :label LabelBuilder
@@ -86,9 +90,13 @@
         nm (subs sk 0 (- (count sk) 2))
         ctrl-prop (eval-call `(fn [ctrl#] (. ctrl# ~(symbol (str nm "Property")))) crtl)]
     (.addListener ctrl-prop
-                  (reify ChangeListener
+                  (reify
+                    ChangeListener
                     (changed [this cl old-val new-val]
-                      (put! v (or new-val :nil)))))))
+                      (put! v (or new-val :nil)))
+                    EventHandler
+                    (handle [this event]
+                      (put! v (or event :nil)))))))
 
 (defn create-input-binding [crtl k c]
   (if (= (name k) "children<-")
@@ -144,7 +152,7 @@
 (let [topics (atom {})]
 
   (defn publish [topic msg]
-    (println topic msg)
+    (println "publish to" topic msg)
     (let [subs (get @topics topic)]
       (doseq [sub subs]
         (when-let [c (.get sub)]
@@ -176,18 +184,23 @@
 (defn bind-to-get-in [a path]
   (let [c (chan (dropping-buffer 1))]
     (add-watch a c (fn [k r o n]
+                     (println "got" o n)
                      (when-let [v (get-in @a path)]
-                       (if (not (put! c v))
+                       (if-not (not (put! c v))
                          (remove-watch a c)))))
+    (put! c (get-in @a path))
     (async/unique c)))
 
 (defn bind-to-assoc-in [a path]
   (let [c (chan (async/sliding-buffer 1))]
-    (go (loop []
-          (let [v (<! c)]
-            (when-not (nil? v)
-              (swap! a assoc-in path v)
-              (recur)))))
+    (go (try (loop []
+               (let [v (<! c)]
+                 (println "associng " v)
+                 (when-not (nil? v)
+                   (swap! a assoc-in path v)
+                   (recur))))
+             (catch Throwable ex
+               (println ex))))
     c))
 
 (comment
