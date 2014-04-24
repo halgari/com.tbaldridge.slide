@@ -1,12 +1,13 @@
 (ns com.tbaldridge.slide
   (:require [com.tbaldridge.slide.util :as util]
-            [clojure.core.async :refer [go <! >! chan timeout put! sliding-buffer map< pipe dropping-buffer] :as async])
+            [clojure.core.async :refer [go <! >! chan timeout put! sliding-buffer map< pipe dropping-buffer] :as async]
+            [clojure.java.io :as jio])
   (:import [javax.swing JFrame]
            [javafx.collections FXCollections]
            [javafx.event ActionEvent EventHandler]
            [javafx.scene Scene SceneBuilder GroupBuilder]
            [javafx.scene.shape CircleBuilder RectangleBuilder]
-           [javafx.scene.text TextBuilder FontBuilder]
+           [javafx.scene.text TextBuilder FontBuilder Font]
            [javafx.scene.control Button ListView Label ScrollPaneBuilder]
            [javafx.scene.layout StackPaneBuilder BorderPane]
            [javafx.stage Stage StageBuilder]
@@ -36,6 +37,9 @@
    :table-view TableViewBuilder
    :table-column TableColumnBuilder
    :text-field TextFieldBuilder})
+
+(defn load-font [^String name ^double size]
+  (Font/loadFont name size))
 
 (defonce force-toolkit-init
   (do (JFrame. "init")
