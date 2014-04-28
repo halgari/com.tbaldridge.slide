@@ -1,6 +1,6 @@
 (ns com.tbaldridge.slide
   (:require [com.tbaldridge.slide.util :as util]
-            [clojure.core.async :refer [go <! >! chan timeout put! sliding-buffer map< pipe dropping-buffer] :as async]
+            [clojure.core.async :refer [go <! >! >!! <!! chan timeout put! sliding-buffer map< pipe dropping-buffer] :as async]
             [clojure.java.io :as jio])
   (:import [javax.swing JFrame]
            [javafx.collections FXCollections]
@@ -8,7 +8,7 @@
            [javafx.scene Scene SceneBuilder GroupBuilder]
            [javafx.scene.shape CircleBuilder RectangleBuilder]
            [javafx.scene.text TextBuilder FontBuilder Font]
-           [javafx.scene.control Button ListView Label ScrollPaneBuilder]
+           [javafx.scene.control Button ListView Label ScrollPaneBuilder TabPaneBuilder TabBuilder]
            [javafx.scene.layout StackPaneBuilder BorderPane]
            [javafx.stage Stage StageBuilder]
            [javafx.application Application]
@@ -16,7 +16,24 @@
            (javafx.scene.control ButtonBuilder TextFieldBuilder ListViewBuilder TableViewBuilder TableColumnBuilder
                                  LabelBuilder)
            (javafx.scene.layout VBoxBuilder HBoxBuilder BorderPaneBuilder)
+           [javafx.scene.chart PieChartBuilder PieChart$Data XYChartBuilder XYChart$Data XYChart$Series]
            [java.lang.ref WeakReference]))
+
+(defn diff
+  ([xs ys]
+   (diff xs ys 0 0))
+  ([[x & xs] [y & ys] xidx yidx]
+   (if (nil? x)
+     (when-not (nil? y)
+       (cons {:op :add :idx yidx :val y}
+             (lazy-seq (diff nil ys xidx (inc yidx)))))
+     (if (= x y)
+       (recur xs ys (inc xidx) (inc yidx))
+       (if (nil? y)
+         (cons {:op :remove :idx xidx}
+               (lazy-seq (diff xs ys (inc xidx) (inc yidx))))
+         (cons {:op :replace :idx xidx :val y}
+               (lazy-seq (diff xs ys (inc xidx) (inc yidx)))))))))
 
 (def ^:dynamic *builder-mappings*
   {:stage StageBuilder
@@ -36,7 +53,29 @@
    :list-view ListViewBuilder
    :table-view TableViewBuilder
    :table-column TableColumnBuilder
-   :text-field TextFieldBuilder})
+   :text-field TextFieldBuilder
+   :tab-pane TabPaneBuilder
+   :tab TabBuilder
+   :pie-chart PieChartBuilder
+   :xy-chart XYChartBuilder})
+
+
+(defn chan->ObservableList [c]
+  (let [olist (FXCollections/observableArrayList)]
+    (go (try (loop [old []]
+               (let [v (<! c)]
+                 (when-not (nil? v)
+                   (let [diff-list (diff old v)]
+                     (doseq [{:keys [op] :as dval} diff-list]
+                       (case op
+                         :add (.add olist (:val dval))
+                         :remove (.remove olist (:idx dval))
+                         :replace (.set olist (:idx dval) (:val dval))))
+                     (recur v)))))
+             (catch Throwable ex
+               (println ex))))
+    olist))
+
 
 (defn load-font [^String name ^double size]
   (Font/loadFont name size))
@@ -157,6 +196,22 @@
         built))
     desc))
 
+(defmethod build-item :pie-chart-data
+           [{:keys [name value]}]
+  (PieChart$Data. name value))
+
+(defmethod build-item :xy-chart-series
+           [{:keys [name data]}]
+  (let [series (XYChart$Series.)]
+    (.setName series name)
+    (doseq [itm data]
+      (-> series .getData (.add (build-item itm))))
+    series))
+
+(defmethod build-item :xy-chart-data
+           [{:keys [x y]}]
+  (XYChart$Data. x y))
+
 (let [topics (atom {})]
 
   (defn publish [topic msg]
@@ -170,10 +225,10 @@
       (go
         (try
           (loop []
-            (when-let [v (<! c)]
-              (publish topic v)
-              (recur))
-            (println "got nil"))
+            (if-let [v (<! c)]
+              (do (publish topic v)
+                  (recur))
+              (println "got nil")))
           (catch Throwable ex
             (println ex))))
       c))
@@ -191,7 +246,7 @@
   (let [c (chan (dropping-buffer 1))]
     (add-watch a c (fn [k r o n]
                      (when-let [v (get-in @a path)]
-                       (if-not (not (put! c v))
+                       (if (not (put! c v))
                          (remove-watch a c)))))
     (when-let [v (get-in @a path)]
       (put! c v))
