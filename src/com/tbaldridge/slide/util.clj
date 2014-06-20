@@ -14,7 +14,9 @@
   [f]
   (let [result (promise)]
     (run-later
-     (deliver result (try (f) (catch Throwable e e))))
+     (deliver result (try (f) (catch Throwable e
+                                (println e)
+                                e))))
     (if (instance? Throwable @result)
       (throw @result)
       @result)))

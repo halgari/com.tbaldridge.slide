@@ -1,311 +1,243 @@
 (ns com.tbaldridge.slide
+  (:import (java.util WeakHashMap))
   (:require [com.tbaldridge.slide.util :as util]
             [clojure.core.async :refer [go <! >! >!! <!! chan timeout put! sliding-buffer map< pipe dropping-buffer] :as async]
-            [clojure.java.io :as jio])
-  (:import [javax.swing JFrame]
-           [javafx.collections FXCollections]
-           [javafx.event ActionEvent EventHandler]
-           [javafx.scene Scene SceneBuilder GroupBuilder]
-           [javafx.scene.shape CircleBuilder RectangleBuilder]
-           [javafx.scene.text TextBuilder FontBuilder Font]
-           [javafx.scene.control Button ListView Label ScrollPaneBuilder TabPaneBuilder TabBuilder]
-           [javafx.scene.layout StackPaneBuilder BorderPane]
-           [javafx.stage Stage StageBuilder]
-           [javafx.application Application]
-           [javafx.beans.value ChangeListener ObservableValue]
+            [clojure.java.io :as jio]
+            [clojure.reflect :as reflect]
+            [clojure.data :as data])
+  (:import (javax.swing JFrame)
+           (javafx.collections FXCollections)
+           (javafx.event ActionEvent EventHandler)
+           (javafx.scene Scene SceneBuilder GroupBuilder)
+           (javafx.scene.shape CircleBuilder RectangleBuilder)
+           (javafx.scene.text TextBuilder FontBuilder Font)
+           (javafx.scene.control ScrollPaneBuilder TabPaneBuilder TabBuilder)
+           (javafx.scene.layout StackPaneBuilder BorderPane)
+           (javafx.stage Stage StageBuilder)
+           (javafx.application Application)
+           (javafx.beans.value ChangeListener ObservableValue)
            (javafx.scene.control ButtonBuilder TextFieldBuilder ListViewBuilder TableViewBuilder TableColumnBuilder
                                  LabelBuilder)
            (javafx.scene.layout VBoxBuilder HBoxBuilder BorderPaneBuilder)
-           [javafx.scene.chart PieChartBuilder PieChart$Data XYChartBuilder XYChart$Data XYChart$Series]
-           [java.lang.ref WeakReference]))
-
-(defn diff
-  ([xs ys]
-   (diff xs ys 0 0))
-  ([[x & xs] [y & ys] xidx yidx]
-   (if (nil? x)
-     (when-not (nil? y)
-       (cons {:op :add :idx yidx :val y}
-             (lazy-seq (diff nil ys xidx (inc yidx)))))
-     (if (= x y)
-       (recur xs ys (inc xidx) (inc yidx))
-       (if (nil? y)
-         (cons {:op :remove :idx xidx}
-               (lazy-seq (diff xs ys (inc xidx) (inc yidx))))
-         (cons {:op :replace :idx xidx :val y}
-               (lazy-seq (diff xs ys (inc xidx) (inc yidx)))))))))
-
-(def ^:dynamic *builder-mappings*
-  {:stage StageBuilder
-   :scene SceneBuilder
-   :group GroupBuilder
-   :stack-pane StackPaneBuilder
-   :circle CircleBuilder
-   :text TextBuilder
-   :font FontBuilder
-   :rectangle RectangleBuilder
-   :scroll-pane ScrollPaneBuilder
-   :button ButtonBuilder
-   :label LabelBuilder
-   :vbox VBoxBuilder
-   :hbox HBoxBuilder
-   :border-pane BorderPaneBuilder
-   :list-view ListViewBuilder
-   :table-view TableViewBuilder
-   :table-column TableColumnBuilder
-   :text-field TextFieldBuilder
-   :tab-pane TabPaneBuilder
-   :tab TabBuilder
-   :pie-chart PieChartBuilder
-   :xy-chart XYChartBuilder})
+           (javafx.scene.chart PieChartBuilder PieChart$Data XYChartBuilder XYChart$Data XYChart$Series LineChartBuilder NumberAxis
+                               BarChartBuilder)
+           (javafx.embed.swing JFXPanel)
+           (java.util WeakHashMap)))
 
 
-(defn chan->ObservableList [c]
-  (let [olist (FXCollections/observableArrayList)]
-    (go (try (loop [old []]
-               (let [v (<! c)]
-                 (when-not (nil? v)
-                   (let [diff-list (diff old v)]
-                     (doseq [{:keys [op] :as dval} diff-list]
-                       (case op
-                         :add (.add olist (:val dval))
-                         :remove (.remove olist (:idx dval))
-                         :replace (.set olist (:idx dval) (:val dval))))
-                     (recur v)))))
-             (catch Throwable ex
-               (println ex))))
-    olist))
+(JFXPanel.)
+(def convert-value nil)
+(defmulti convert-value (fn [dt old new]
+                          dt))
+
+(defprotocol IUIComponent
+  (update-property [this k v]))
 
 
-(defn load-font [^String name ^double size]
-  (Font/loadFont name size))
-
-(defonce force-toolkit-init
-  (do (JFrame. "init")
-      (javafx.embed.swing.JFXPanel.)))
+(defprotocol IComponentRenderer
+  (-render [this])
+  (-get-data [this]))
 
 
-(def cached-forms (atom {}))
-(defn reset-cached-forms []
-  (reset! cached-forms {}))
+(def data-table (WeakHashMap.))
+(def state-table (WeakHashMap.))
 
-(defn eval-call [form & args]
-  (let [f (if-let [v (get @cached-forms form)]
-            v
-            (-> cached-forms
-                (swap! assoc form (eval form))
-                (get form)))]
-    (apply f args)))
+(def construct-component nil)
+(defmulti construct-component (fn [data state]
+                                (:type state)))
 
 
-(defn to-javafx-value [v]
-  (cond
-   (or (vector? v)
-       (seq? v)) (FXCollections/observableArrayList (map to-javafx-value  v))
+(defn make-component [f data]
+  (reify IComponentRenderer
+    (-render [this]
+      (f data))
+    (-get-data [this]
+      data)))
 
-       :else v))
+(defmacro component [[data] & body]
+  (assert (symbol? data))
+  `(make-component
+     (fn [~data]
+       ~@body)
+     ~data))
 
+(defn convert-name [nm]
+  (loop [c (seq nm)
+         acc []
+         last-upper true]
+    (let [[h & t] c]
+      (if h
+        (if (Character/isUpperCase h)
+          (if last-upper
+            (recur t (conj acc (Character/toLowerCase h)) true)
+            (recur t (conj acc \- (Character/toLowerCase h)) true))
+          (recur t (conj acc h) false))
+        (apply str acc)))))
 
-(defmulti data-converter identity)
+(defn de-dup-cases [cases]
+  (first (reduce
+           (fn [[cases seen :as acc] [kw :as case]]
+             (if (seen kw)
+               acc
+               [(conj cases case)
+                (conj seen kw)]))
+           [[] #{}]
+           cases)))
 
-(defmethod data-converter javafx.beans.property.SimpleStringProperty
-  [x]
-  (fn [data]
-    (str data)))
+(defn properties-for-class [klass]
+  (let [klass (Class/forName (name klass))]
+    (->> (for [member (:members (reflect/type-reflect klass :ancestors true))
+               :let [member-name (name (:name member))]
+               :when (.startsWith member-name "set")
+               :let [getter-name (symbol (str "get" (subs member-name 3)))]]
+           `[~(keyword (convert-name (subs member-name (count "set"))))
+             (if (nil? ~'value)
+               (. ~'this ~(:name member) nil)
+               (let [old# (. ~'this ~getter-name)
+                     v# (convert-value ~(first (:parameter-types member))
+                                       old# ~'value)]
+                 (if (identical? old# v#)
+                   nil
+                   (. ~'this ~(:name member) v#))))])
+         de-dup-cases
+         (sort-by first)
+         (apply concat))))
 
-(defmethod data-converter javafx.scene.Node$MiscProperties$8
-  [x]
-  (fn [data]
-    (boolean data)))
+(clojure.pprint/pprint (properties-for-class 'javafx.stage.Stage))
 
-(defmethod data-converter javafx.scene.control.ListView$2
-  [x]
-  (fn [data]
-    (FXCollections/observableArrayList data)))
+(defn update-properties [component old-state new-state]
+  (let [[old-diff new-diff] (data/diff old-state new-state)]
+    (println "states " old-diff new-diff)
+    (doseq [[k v] (dissoc new-diff :type)]
+      (update-property component k v))
+    (doseq [[k] (apply dissoc old-diff :type (keys new-diff))]
+      (update-property component k nil))
+    component))
 
-(defmethod data-converter :default
-  [x]
-  (fn [data]
-    data))
+(defn to-lower-name [nm]
+  (let [nm (name nm)
+        idx (.lastIndexOf nm ".")]
+    (symbol (convert-name (.toLowerCase (subs nm (inc idx)))))))
 
-(defn output-binding? [nm]
-  (.endsWith (name nm) "->"))
+(defn builder-name [nm]
+  (symbol (str (name nm) "Builder")))
 
-(defn input-binding? [nm]
-  (.endsWith (name nm) "<-"))
+(deftype Component [data f statics]
+  IComponentRenderer
+  (-get-data [this]
+    data)
+  (-render [this]
+    (apply f data statics))
+  Object
+  (hashCode [this]
+    (hash data))
+  (equals [this other]
+    (and (instance? Component other)
+         (= data (-get-data other)))))
 
-(defn create-output-binding [crtl k v]
-  (let [sk (name k)
-        nm (subs sk 0 (- (count sk) 2))
-        ctrl-prop (eval-call `(fn [ctrl#] (. ctrl# ~(symbol (str nm "Property")))) crtl)]
-    (.addListener ctrl-prop
-                  (reify
-                    ChangeListener
-                    (changed [this cl old-val new-val]
-                      (put! v (or new-val :nil)))
-                    EventHandler
-                    (handle [this event]
-                      (put! v (or event :nil)))))))
+(defmacro defcomponent [tp]
+  `(do (defmethod construct-component ~tp
+                     [in-data# in-state#]
+         (let [comp# (.build (. ~(builder-name tp) ~'create))]
+           (.put data-table comp# in-data#)
+           (.put state-table comp# in-state#)
+           (update-properties comp# nil in-state#)))
+       (defn ~(to-lower-name tp) [& {:as opts#}]
+         (Component. (assoc opts# :type ~tp)
+                     identity
+                     nil))
+       (extend-type ~tp
+         IUIComponent
+         (update-property [~'this k# ~'value]
+           (println "update " ~'this k# ~'value)
+           (case k#
+             ~@(properties-for-class tp))))))
 
-(defn create-input-binding [crtl k c]
-  (if (= (name k) "children<-")
-    (go
-      (try
-        (loop []
-          (when-let [v (<! c)]
-            (util/run-later (-> crtl .getChildren (.setAll v)))
-            (recur)))
-        (catch Throwable ex
-          (println ex))))
-    (let [sk (name k)
-          nm (subs sk 0 (- (count sk) 2))
-          ctrl-prop (eval-call `(fn [ctrl#] (. ctrl# ~(symbol (str nm "Property")))) crtl)
-          converter (data-converter (class ctrl-prop))]
-      (go
-        (try
-          (loop []
-            (when-let [v (<! c)]
-              (util/run-later (.setValue ctrl-prop (converter v)))
-              (recur)))
-          (catch Throwable ex
-            (println ex)))))))
+(defcomponent javafx.stage.Stage)
+(defcomponent javafx.scene.Scene)
+(defcomponent javafx.scene.control.Button)
+(defcomponent javafx.scene.layout.StackPane)
 
-(defmulti build-item :type)
+(defmethod construct-component javafx.scene.Scene
+           [in-data in-state]
+  (let [comp# (.build (-> (. javafx.scene.SceneBuilder create)
+                          (.root (javafx.scene.layout.StackPane.))))]
+    (.put data-table comp# in-data)
+    (.put state-table comp# in-state)
+    (update-properties comp# nil in-state)))
 
-(defmethod build-item :default
-  [desc]
-  (if (map? desc)
-    (let [builder (get *builder-mappings* (:type desc))
-          _ (assert builder (str "Could not find builder for " (pr-str desc)))
-          bldr (eval-call `(fn [] (. ~builder create)))
-          ctrl-promise (promise)]
-      (doseq [[k v] (dissoc desc :type :name)]
-        (when-let [v (cond
-                      (output-binding? k) nil
-                      (input-binding? k) nil
-                      (map? v) (build-item v)
-                      (vector? v) (mapv build-item v)
-                      :else v)]
-          (eval-call `(fn [x# v#] (. x# ~(symbol (name k)) v#)) bldr (to-javafx-value v))))
-      (let [built (.build bldr)]
-        (doseq [[k v] (dissoc desc :type :name)]
-          (cond
-           (output-binding? k) (create-output-binding built k v)
-           (input-binding? k) (create-input-binding built k v)
-           :else nil))        
-        built))
-    desc))
+(defn log [x]
+  (println "------<> " x)
+  x)
 
-(defmethod build-item :pie-chart-data
-           [{:keys [name value]}]
-  (PieChart$Data. name value))
+(defn render-all [component]
+  (println "render..." component)
+  (if (instance? Component component)
+    (recur (-render component))
+    component))
 
-(defmethod build-item :xy-chart-series
-           [{:keys [name data]}]
-  (let [series (XYChart$Series.)]
-    (.setName series name)
-    (doseq [itm data]
-      (-> series .getData (.add (build-item itm))))
-    series))
+(defn render [component new-component]
+  (println (-get-data new-component))
+  (log (if-not component
+         [:new (construct-component (-get-data new-component)
+                                    (render-all new-component))]
+         (let [old-data (.get data-table component)]
+           (if (= old-data (-get-data new-component))
+             [:nil component]
+             (let [old-state (.get state-table component)
+                   new-state (render-all new-component)]
+               (if (instance? (:type new-state) component)
+                 (do
+                   (update-properties component old-state new-state)
+                   (.put state-table component new-state)
+                   (.put data-table component (-get-data new-component))
+                   [:updated component])
+                 [:replace (construct-component (-get-data new-component)
+                                                (render-all new-component))])))))))
 
-(defmethod build-item :xy-chart-data
-           [{:keys [x y]}]
-  (XYChart$Data. x y))
+(defmethod convert-value javafx.scene.Scene
+           [tp old val]
+  (let [[action val] (render old val)]
+    (println action val)
+    (if action
+      val
+      old)))
 
-(let [topics (atom {})]
+(defmethod convert-value java.lang.String
+           [tp old val]
+  (assert (string? val))
+  val)
 
-  (defn publish [topic msg]
-    (let [subs (get @topics topic)]
-      (doseq [sub subs]
-        (when-let [c (.get sub)]
-          (put! c msg)))))
+(defmethod convert-value javafx.scene.Parent
+           [tp old val]
+  (let [[action val] (render old val)]
+    (println action val)
+    (if action
+      val
+      old)))
 
-  (defn publish-to [topic]
-    (let [c (chan (dropping-buffer 1024))]
-      (go
-        (try
-          (loop []
-            (if-let [v (<! c)]
-              (do (publish topic v)
-                  (recur))
-              (println "got nil")))
-          (catch Throwable ex
-            (println ex))))
-      c))
+(defmethod convert-value javafx.event.EventHandler
+           [tp old new-val]
+  (assert (var? new-val))
+  (reify javafx.event.EventHandler
+    (handle [this event]
+      (new-val event))))
 
-  (defn subscribe-to [topic]
-    (let [c (chan (dropping-buffer 1024))]
-      (swap! topics update-in [topic] (fnil conj #{}) (WeakReference. c))
-      c))
+(defn sup-component [txt]
+  (Component. txt
+              (fn [txt]
+                (button :text txt))
+              nil))
 
-  (defn get-topics []
-    @topics))
-
-
-(defn bind-to-get-in [a path]
-  (let [c (chan (dropping-buffer 1))]
-    (add-watch a c (fn [k r o n]
-                     (when-let [v (get-in @a path)]
-                       (if (not (put! c v))
-                         (remove-watch a c)))))
-    (when-let [v (get-in @a path)]
-      (put! c v))
-    (async/unique c)))
-
-(defn bind-to-assoc-in [a path]
-  (let [c (chan (async/sliding-buffer 1))]
-    (go (try (loop []
-               (let [v (<! c)]
-                 (when-not (nil? v)
-                   (swap! a assoc-in path v)
-                   (recur))))
-             (catch Throwable ex
-               (println ex))))
-    c))
-
-(comment
-  (def a (atom {:foo "1"
-                :disable false}))
-
-  (def scene {:type :stage
-              :title "hello"
-              :scene {:type :scene
-                      :height 480
-                      :width 640
-                      :root {:type :vbox
-                             :minHeight 400
-                             :minWidth 400
-                             :children [{:type :button
-                                         :text<- (bind-to-get-in a [:foo])
-                                         :pressed-> (publish-to :button-clicked2)}
-                                        {:type :label
-                                         :text "Sup homie?"}
-                                        {:type :text-field
-                                         :name :input
-                                         :text-> (bind-to-assoc-in a [:foo])
-                                         :text "FooBar"}
-                                        {:type :border-pane
-                                         :top {:type :button
-                                               :text "Hey"}
-                                         :center {:type :table-view
-                                                  :columns [{:type :table-column
-                                                             :text "name"}
-                                                            {:type :table-column
-                                                             :text "age"}]
-                                                  :items [["foo" "bar"]]}
-                                         :left {:type :button
-                                                :text "cool"}
-                                         :right {:type :button
-                                                 :text "right on"}}
-                                        #_{:type :text-field
-                                           :text (map-property
-                                                  (partial str "foo - ")
-                                                  (bind-to :input :text))}
-                                        #_{:type :list-view
-                                           :items (rand-list)}]}}})
-
-  (util/run-and-wait (.show (build-item scene)))
-
-  (swap! a assoc :items ["fo2" "bar"])
-  (println @a)
-  )
+(let [a (atom nil)]
+  (util/run-later
+    (reset! a (second (render @a (stage :title "foo"
+                                        :scene (scene :root (sup-component "foo"))))))
+    #_(reset! a (second (render @a (stage :title "bar"
+                                        :scene (scene :root (button :text "sup?"))))))
+    (println "....")
+    (reset! a (second (render @a (stage :title "bar"
+                                        :scene (scene :root (sup-component "foo"))))))
+    (.show @a)
+    (println "done")
+    ))
